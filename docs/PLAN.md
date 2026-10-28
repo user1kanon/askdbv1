@@ -6,7 +6,7 @@
 
 | Slice | Name | Status | Notes |
 |---|---|---|---|
-| 1 | Foundation: settings, schema introspection, glossary | todo | |
+| 1 | Foundation: settings, schema introspection, glossary | done ✅ | 54 tests; log in `docs/slice-1-log.txt` |
 | 2 | Guard and read-only executor | todo | |
 | 3 | Walking skeleton: ask → table, streamed | todo | |
 | 4 | Summary, number verification, audit log | todo | |
@@ -35,12 +35,14 @@ Conventions for every slice: tests land with the code; the guard gets adversaria
 - **Files:** `askdb/sql_guard.py` (sqlglot single-statement SELECT/WITH-SELECT check, function allowlist, `EXPLAIN QUERY PLAN` cartesian-join rejection), `askdb/executor.py` (`file:...?mode=ro`, `PRAGMA query_only=ON`, authorizer callback, progress-handler timeout via `interrupt()`, `LIMIT` wrapping with truncation flag, BLOB and long-text display handling, semaphore of 2, connection per request), `tests/test_sql_guard.py`, `tests/test_executor.py`.
 - **Verify:** Adversarial cases all rejected: DROP/INSERT/UPDATE, multi-statement, PRAGMA, ATTACH, `load_extension`, CTE-wrapped writes, comment tricks. A slow recursive CTE hits the timeout. A 20k-row query comes back truncated at the cap with the flag set. The cartesian join is rejected. A write attempted past the guard still fails at the authorizer and `query_only` layers (defense-in-depth tests). `pytest tests/test_sql_guard.py tests/test_executor.py`.
 - **Depends on:** Slice 1 (settings, DB path).
+- **Note from slice 1:** `askdb/schema.py::connect_readonly` already opens `file:...?mode=ro&immutable=0` plus `PRAGMA query_only=ON`; build the executor on it instead of a second opener, and add the authorizer, progress handler and `LIMIT` wrapping on top. Settings already has `row_cap`, `query_timeout_s`, `max_concurrent_queries`. Introspection and glossary validation use PRAGMA/EXPLAIN on trusted code paths only; they must never go through `sql_guard`.
 
 ## Slice 3: Walking skeleton: ask → table, streamed
 - **Goal:** Type a question in the browser and see a result table. The pipeline is interpret → guard → execute, streamed over SSE (Understanding → Running stages, table event). It uses a real Claude client with structured JSON output, plus a stub for tests.
 - **Files:** `askdb/llm.py` (client wrapper, backoff retry once, per-question call cap, `LLMClient` protocol, stub), `askdb/prompting.py` (system prompt, schema and glossary as cached delimited data, rules for division by zero, NULLs, and ties), `askdb/agent.py` (orchestrator, `status=ok` path only), `POST /api/ask` in `main.py`, `frontend/` (Vite React scaffold, input box, stage indicator, plain table, SSE client), `tests/test_agent.py`, `tests/test_api_ask.py` (TestClient with stubbed LLM), `frontend` lint and test setup, CLAUDE.md Commands section corrected.
 - **Verify:** The API test streams stages then a table event for a stubbed `ok` response. A stubbed non-SELECT SQL yields a guard error event. A prompt-injection DB value in schema distincts does not change behavior (delimiting test). Manual: `uvicorn` plus `npm run dev`, ask one live question, see rows. `pytest` and `npm run lint && npm test`.
 - **Depends on:** Slices 1 and 2.
+- **Note from slice 1:** The prompt's schema and glossary come from `app.state.health.schema_info` (`SchemaInfo` from `build_schema_info`): per-table/column descriptions, `distinct_values`, plus the glossary's free-text `description` (which carries the metric definitions, so send it verbatim). `excluded` items are already stripped from it; build prompts from that object, never from a fresh introspection. `/api/ask` should return a clear error when `health.schema_info is None`, and `ANTHROPIC_API_KEY` is only checked by `/api/health` so far.
 
 ## Slice 4: Summary, number verification, audit log
 - **Goal:** After the table, a grounded plain-English summary streams in. Every number in it is verified against the result set. Unverifiable numbers trigger one regeneration, then a templated fallback with a note. Each ask appends one JSONL audit record.
@@ -53,6 +55,7 @@ Conventions for every slice: tests land with the code; the guard gets adversaria
 - **Files:** `askdb/timeutil.py` (as-of anchor from `data_max` or `today`, fiscal-year start, quarter and month windows, far-behind-today banner flag), `prompting.py` (turn history of question/SQL/assumptions only, as-of info), `agent.py` (`builds_on_turn`, `is_new_topic`, confidence passthrough), frontend `AnswerCard`, `DerivationPanel`, `ConfidenceNotice`, `sessionStorage` thread state, "New chat", "Building on:" and "Treated as a new question" labels, example questions from glossary on the empty state, `tests/test_timeutil.py`, `tests/test_followups.py`.
 - **Verify:** Unit tests for "last quarter", "this month", and "recent" with fiscal start month 4 and both anchor modes. A follow-up request carries history without rows (assert on the stubbed prompt). Frontend component tests for chips, the amber notice (medium and low), and persistence across reload but not across a new tab. Manual: ask, then "break that down by region".
 - **Depends on:** Slice 4.
+- **Note from slice 1:** `data/cloudmetrics.yaml` has `calendar.fiscal_year_start_month` but no `as_of` entry, so `data_max` anchoring needs one added (e.g. `as_of: { column: invoices.invoice_date, mode: data_max }`, or pick the right column); the glossary loader and `SchemaInfo.as_of` already support it. The glossary itself warns that data ends November 2025, so "last N months" relative to today would return nothing.
 
 ## Slice 6: Clarify, unanswerable, refusal, self-check, repair, zero-row, golden harness
 - **Goal:** The pipeline handles every non-happy path in SPEC §5 and §13. The golden-set harness can measure accuracy.
@@ -71,6 +74,7 @@ Conventions for every slice: tests land with the code; the guard gets adversaria
 - **Files:** `askdb/admin.py` (loopback-only middleware, validate SQLite opens read-only, YAML parses, every referenced table, column, and metric SQL compiles via `EXPLAIN`, atomic swap on success, previous version kept on failure, persists `config.json`, coverage report of unmapped tables and columns), `/admin/*` routes, frontend `/admin` page, optional `askdb/draft_glossary.py` CLI, README and run instructions, `docs/PLAN.md` final status, `tests/test_admin.py`, `tests/test_loopback.py`.
 - **Verify:** Non-loopback client address gets 403. A bad YAML, a missing-table reference, and a non-SQLite file are each rejected with exact errors while the old config stays live. A good change hot-reloads with no restart and `config.json` is gitignored. Release gate (SPEC §14): `pytest tests/validation` with live LLM, ≥90% golden pass and zero wrong-but-high-confidence results. If it fails, iterate prompts and glossary here. Manual end-to-end walkthrough of ask, clarify, follow-up, export, truncation, and cancel.
 - **Depends on:** Slices 6 and 7.
+- **Note from slice 1:** Reuse `askdb.glossary.load_glossary` + `validate_glossary(glossary, introspect(db, distinct_cap=0), db_path)` for validate-then-activate (it already collects all errors and compiles metric/example SQL with `EXPLAIN`), and `askdb.health.run_health_check` for the activation check. The health report is built once in the app lifespan, so hot reload must rebuild `app.state.health`. The coverage report (unmapped tables/columns) is not built yet.
 
 ---
 

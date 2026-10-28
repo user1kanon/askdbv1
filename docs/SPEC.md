@@ -76,6 +76,8 @@ examples:
     sql: "SELECT COUNT(*) ..."
 excluded: []   # tables/columns hidden from the LLM entirely (optional)
 ```
+**Shipped file format** (`data/cloudmetrics.yaml`, the format the loader accepts): top-level `name`, `display_name`, `path` (informational; the DB path comes from `DB_PATH`), `calendar.fiscal_year_start_month`, a free-text `description` (schema grain, joins, metric definitions, SQLite date notes), and `tables` as a **list** of `{name, description, columns: [{name, type, primary_key, references, description, synonyms}]}`. The keys in the example above (`as_of`, `metrics`, `terms`, `joins`, `examples`, `excluded`) are optional and validated when present; The example's top-level `fiscal_year_start_month` is written `calendar.fiscal_year_start_month` in the shipped format (a top-level key is rejected). Unknown keys are rejected. `excluded` entries are `table` or `table.column`. A metric `sql` is either a full `SELECT`, or an expression that must compile against at least one single table (use a full `SELECT` for joined metrics). The shipped file has no `as_of`, so the data-max anchor (§8) needs an `as_of` entry added to the glossary before slice 5.
+
 Schema fits entirely in the prompt (small DB); sent each request with prompt caching.
 
 ## 8. Relative time

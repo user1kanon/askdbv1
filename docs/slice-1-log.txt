@@ -1,0 +1,43 @@
+Slice 1: Foundation: settings, schema introspection, glossary
+=============================================================
+
+What was built
+- pyproject.toml: setuptools package `askdb`; deps fastapi, uvicorn, pydantic(-settings), pyyaml;
+  dev extras pytest, httpx, ruff. ruff: line length 100, rules E F I UP B.
+- askdb/settings.py: pydantic-settings `Settings` (ANTHROPIC_API_KEY, DB_PATH, GLOSSARY_PATH,
+  ROW_CAP=10000, QUERY_TIMEOUT_S=10, MAX_CONCURRENT_QUERIES=2). The only module that reads .env.
+  .env.example lists the new keys (commented out).
+- askdb/glossary.py: pydantic models (extra keys rejected), `load_glossary` (YAML + structure
+  errors collected into GlossaryError.errors), `validate_glossary` (tables, columns, references,
+  as_of, joins, excluded checked against the schema; metric and example SQL compiled with
+  EXPLAIN on a read-only connection, never executed).
+- askdb/schema.py: `connect_readonly` (file:...?mode=ro&immutable=0 + PRAGMA query_only=ON),
+  `introspect` (tables, columns, PK, FK incl. implicit targets, indexes, row counts, distinct values
+  for low-cardinality text columns, cap 50, values over 80 chars skipped; excluded tables/columns
+  are never read), `merge_glossary`, `build_schema_info`.
+- askdb/health.py: `run_health_check` turns a missing key, missing/unreadable/empty DB, bad glossary
+  (every error listed) and an all-excluded schema into actionable Problem messages.
+- askdb/main.py: `create_app(settings)`; lifespan runs the health check and logs problems;
+  GET /api/health, GET /api/schema-info (503 with the problem list when DB or glossary is unusable).
+- docs/SPEC.md section 7: documents the shipped glossary format (see below).
+- docs/PLAN.md: slice 1 marked done; notes added under slices 2, 3, 5 and 8.
+
+Decision: glossary format
+data/cloudmetrics.yaml does not match the SPEC section 7 example (calendar block, list-style tables,
+free-text description, no as_of/metrics/terms/joins/examples/excluded). The loader accepts the
+shipped format and the optional SPEC keys; SPEC section 7 was updated in this same change.
+
+Verification
+- pytest: 54 passed (tests/test_schema.py, test_glossary.py, test_api.py, test_settings.py).
+  Covers introspection against data/cloudmetrics.db, indexes, exclusions, read-only connection,
+  non-SQLite / missing files, glossary validation (bad table, column, reference, join, as_of,
+  excluded, metric SQL, example SQL, multi-statement metric), structural YAML errors, and health
+  failures through the API (no key, missing DB, empty DB, bad glossary, all tables excluded).
+- ruff check . and ruff format --check . : clean.
+- uvicorn askdb.main:app --host 127.0.0.1: /api/health and /api/schema-info returned the five
+  tables with correct row counts, merged descriptions and distinct values; the server was stopped.
+
+Not done / out of scope
+- No LLM, guard or executor code (slices 2 and 3).
+- Admin coverage report and hot reload (slice 8).
+- CLAUDE.md Commands section left as is; slice 3 corrects it.

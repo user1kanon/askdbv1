@@ -1,0 +1,155 @@
+# CloudMetrics SaaS subscription analytics database.
+# Format: see config/databases/sample.yaml. What the model sees for every question is
+# exactly `description` (verbatim) and `tables` (rendered as CREATE TABLE DDL with the
+# descriptions as comments). Business rules live in `description` only.
+#
+# Sources: schema.json and business_rules.json supplied with the database.
+
+# ---------------------------------------------------------------------------
+# Connection
+# ---------------------------------------------------------------------------
+name: cloudmetrics
+display_name: CloudMetrics SaaS Analytics
+path: ${CLOUDMETRICS_DB_PATH}             # e.g. ./data/cloudmetrics.db; opened read-only (mode=ro)
+
+calendar:
+  fiscal_year_start_month: 1              # calendar year
+
+# ---------------------------------------------------------------------------
+# Schema description (free text, sent verbatim)
+# ---------------------------------------------------------------------------
+description: |
+  CloudMetrics is a B2B project-management SaaS product. This database holds its
+  customer, subscription, billing and support data: 200 customer companies, 4 plans,
+  about 280 subscriptions, about 1,800 invoices and about 700 support tickets, covering
+  March 2022 to November 2025. All money is in USD.
+
+  Grain of each table:
+  - `customers`: one row per customer company account.
+  - `plans`: one row per pricing tier (Starter $29, Professional $79, Business $149,
+    Enterprise $299 per month). Fixed seed data.
+  - `subscriptions`: one row per subscription of a customer to a plan. A customer can
+    have several subscriptions over time (upgrades and downgrades), so a customer-level
+    question must aggregate or pick the latest subscription; do not assume one
+    subscription per customer.
+  - `invoices`: one row per billing period charged to a subscription (monthly or
+    annual). `customer_id` is denormalised here and always matches the subscription's
+    customer.
+  - `support_tickets`: one row per ticket raised by a customer.
+
+  How the tables join:
+  - `subscriptions.customer_id` -> `customers.customer_id`
+  - `subscriptions.plan_id` -> `plans.plan_id`
+  - `invoices.subscription_id` -> `subscriptions.subscription_id`
+  - `invoices.customer_id` -> `customers.customer_id`
+  - `support_tickets.customer_id` -> `customers.customer_id`
+
+  Metric definitions (follow these exactly):
+  - MRR (monthly recurring revenue) = SUM(subscriptions.mrr) WHERE status = 'active'.
+    The `mrr` column is already a monthly figure; never divide it. Exclude churned,
+    trial and paused subscriptions. "MRR by plan" joins `plans` on `plan_id`.
+  - Revenue (total revenue, billings, payments) = SUM(invoices.amount) WHERE status = 'paid'.
+    Exclude pending, overdue and refunded invoices. Monthly revenue trends group by
+    strftime('%Y-%m', invoice_date).
+  - Revenue and MRR are different metrics: revenue is actual paid invoices; MRR is the
+    recurring amount of active subscriptions. Do not substitute one for the other.
+  - Churn rate for a period = number of subscriptions with status = 'churned' and
+    `end_date` inside the period, divided by the number of subscriptions that were
+    active at the start of the period (start_date < period start and (end_date IS NULL
+    or end_date >= period start)). Churn is counted at the subscription level, not the
+    customer level. A churned subscription always has status = 'churned' and a non-NULL
+    `end_date`.
+  - Average resolution time = AVG((julianday(resolved_at) - julianday(created_at)) * 24)
+    in hours, over tickets WHERE resolved_at IS NOT NULL. Multiply by 24*60 for minutes.
+  - Customer count = COUNT(*) FROM customers, regardless of subscription status.
+    "Active customers" = customers with at least one subscription with status = 'active'
+    (COUNT(DISTINCT customer_id)).
+  - ARPU (average revenue per user) = SUM(mrr) / COUNT(*) over active subscriptions.
+    It is per subscription, not per customer.
+
+  Status conventions and NULLs:
+  - An active subscription has status = 'active' and end_date IS NULL. end_date is NULL
+    for every active, trial and paused subscription and is set for every churned one.
+  - A resolved ticket has status 'resolved' or 'closed' and a non-NULL resolved_at;
+    open and in_progress tickets have resolved_at NULL. Always handle these NULLs in
+    WHERE clauses and aggregations.
+  - Ticket priority order from most to least urgent: critical, high, medium, low.
+
+  SQLite date handling (this is SQLite, not Postgres or MySQL):
+  - Dates are ISO text: signup_date, start_date, end_date, invoice_date as YYYY-MM-DD;
+    created_at and resolved_at as YYYY-MM-DD HH:MM:SS.
+  - Group by month with strftime('%Y-%m', col), by year with strftime('%Y', col),
+    by quarter with strftime('%Y', col) || '-Q' || ((CAST(strftime('%m', col) AS INTEGER) + 2) / 3).
+  - Date differences: julianday(a) - julianday(b) gives days; multiply by 24 for hours.
+  - Relative periods: date('now', '-12 months'). DATE_TRUNC, EXTRACT, DATEADD, DATEDIFF,
+    TIMESTAMPDIFF and EPOCH do not exist in SQLite.
+  - The data ends in November 2025, so questions about "the last N months" relative to
+    today may return no rows; prefer explicit date ranges when the user names a period.
+
+  Which table answers what:
+  - Money actually received: `invoices`. Recurring run-rate: `subscriptions`.
+  - Customer attributes (industry, company_size, country, account_owner, signup_date):
+    `customers`. Join to it for any breakdown by those attributes.
+  - Plan names and list prices: `plans`. Actual charged recurring amount: `subscriptions.mrr`.
+  - Support load and service quality: `support_tickets`.
+
+# ---------------------------------------------------------------------------
+# Table definitions
+# ---------------------------------------------------------------------------
+tables:
+  - name: customers
+    description: All registered customer companies. One row per company account.
+    columns:
+      - { name: customer_id,   type: INTEGER, primary_key: true, description: "Unique customer identifier" }
+      - { name: company_name,  type: TEXT,    description: "Registered company name" }
+      - { name: industry,      type: TEXT,    description: "Industry vertical: Technology, Healthcare, Finance, Retail, Education, Manufacturing" }
+      - { name: company_size,  type: TEXT,    description: "Size tier: Startup (1-50 employees), SMB (51-200), Mid-Market (201-1000), Enterprise (1001+)" }
+      - { name: country,       type: TEXT,    description: "Country where the company is headquartered" }
+      - { name: signup_date,   type: DATE,    description: "Date the customer first signed up, YYYY-MM-DD" }
+      - { name: account_owner, type: TEXT,    description: "Internal sales representative assigned to this account" }
+
+  - name: plans
+    description: Available subscription plans. Fixed seed data with 4 pricing tiers.
+    columns:
+      - { name: plan_id,       type: INTEGER, primary_key: true, description: "Unique plan identifier" }
+      - { name: plan_name,     type: TEXT,    description: "Tier name: Starter, Professional, Business, Enterprise" }
+      - { name: monthly_price, type: REAL,    description: "List price per month in USD: Starter 29, Professional 79, Business 149, Enterprise 299" }
+      - { name: max_users,     type: INTEGER, description: "Maximum user seats allowed on this plan" }
+      - { name: features,      type: TEXT,    description: "Comma-separated list of features included in the plan" }
+
+  - name: subscriptions
+    description: Customer subscriptions to plans. A customer may have several over time (upgrades/downgrades); the most recent is typically the active one.
+    columns:
+      - { name: subscription_id, type: INTEGER, primary_key: true, description: "Unique subscription identifier" }
+      - { name: customer_id,     type: INTEGER, references: customers.customer_id }
+      - { name: plan_id,         type: INTEGER, references: plans.plan_id }
+      - { name: start_date,      type: DATE,    description: "Date the subscription started, YYYY-MM-DD" }
+      - { name: end_date,        type: DATE,    description: "Date the subscription ended; NULL while ongoing (active, trial, paused)" }
+      - { name: status,          type: TEXT,    description: "active, churned, trial, paused" }
+      - { name: billing_cycle,   type: TEXT,    description: "monthly or annual" }
+      - name: mrr
+        type: REAL
+        description: "Monthly recurring revenue in USD for this subscription; plan price with up to +/-10% discount variance. Already monthly."
+
+  - name: invoices
+    description: Billing invoices generated for subscriptions. One invoice per billing period (monthly or annual).
+    columns:
+      - { name: invoice_id,      type: INTEGER, primary_key: true, description: "Unique invoice identifier" }
+      - { name: subscription_id, type: INTEGER, references: subscriptions.subscription_id }
+      - { name: customer_id,     type: INTEGER, references: customers.customer_id, description: "Denormalised; always matches the subscription's customer" }
+      - { name: invoice_date,    type: DATE,    description: "Date the invoice was issued, YYYY-MM-DD" }
+      - { name: amount,          type: REAL,    description: "Invoice amount in USD" }
+      - { name: status,          type: TEXT,    description: "paid, pending, overdue, refunded" }
+      - { name: payment_method,  type: TEXT,    description: "credit_card, bank_transfer, paypal" }
+
+  - name: support_tickets
+    description: "Customer support tickets: issues, requests and bugs reported by customers."
+    columns:
+      - { name: ticket_id,   type: INTEGER,  primary_key: true, description: "Unique ticket identifier" }
+      - { name: customer_id, type: INTEGER,  references: customers.customer_id }
+      - { name: created_at,  type: DATETIME, description: "When the ticket was created, YYYY-MM-DD HH:MM:SS" }
+      - { name: resolved_at, type: DATETIME, description: "When the ticket was resolved; NULL while open or in_progress" }
+      - { name: priority,    type: TEXT,     description: "low, medium, high, critical" }
+      - { name: category,    type: TEXT,     description: "billing, technical, feature_request, onboarding, bug" }
+      - { name: status,      type: TEXT,     description: "open, in_progress, resolved, closed" }
+      - { name: subject,     type: TEXT,     description: "Brief description of the issue" }

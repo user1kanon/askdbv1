@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     glossary_path: Path = Path("data/cloudmetrics.yaml")
     row_cap: int = Field(10_000, gt=0)
     query_timeout_s: float = Field(10.0, gt=0)
+    max_concurrent_queries: int = Field(2, gt=0)
 
     @field_validator("db_path", "glossary_path")
     @classmethod

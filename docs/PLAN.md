@@ -7,7 +7,7 @@
 | Slice | Name | Status | Notes |
 |---|---|---|---|
 | 1 | Foundation: settings, schema introspection, glossary | done | 43 tests; SPEC §7 updated to the list-of-tables glossary shape |
-| 2 | Guard and read-only executor | todo | |
+| 2 | Guard and read-only executor | done | 163 tests total; guard + executor + 4-layer defense-in-depth tests |
 | 3 | Walking skeleton: ask → table, streamed | todo | |
 | 4 | Summary, number verification, audit log | todo | |
 | 5 | Derivation panel, relative time, follow-ups, confidence | todo | |
@@ -42,6 +42,7 @@ Conventions for every slice: tests land with the code; the guard gets adversaria
 - **Files:** `askdb/llm.py` (client wrapper, backoff retry once, per-question call cap, `LLMClient` protocol, stub), `askdb/prompting.py` (system prompt, schema and glossary as cached delimited data, rules for division by zero, NULLs, and ties), `askdb/agent.py` (orchestrator, `status=ok` path only), `POST /api/ask` in `main.py`, `frontend/` (Vite React scaffold, input box, stage indicator, plain table, SSE client), `tests/test_agent.py`, `tests/test_api_ask.py` (TestClient with stubbed LLM), `frontend` lint and test setup, CLAUDE.md Commands section corrected.
 - **Verify:** The API test streams stages then a table event for a stubbed `ok` response. A stubbed non-SELECT SQL yields a guard error event. A prompt-injection DB value in schema distincts does not change behavior (delimiting test). Manual: `uvicorn` plus `npm run dev`, ask one live question, see rows. `pytest` and `npm run lint && npm test`.
 - **Depends on:** Slices 1 and 2.
+- **Note (from slice 2):** build one `Executor.from_settings(settings, allowed_tables=<names in schema_info>)` per loaded config so the guard also blocks `excluded:` tables. `Executor.run(sql)` is blocking (call via a threadpool) and raises `GuardError` (`.reason`), `QueryTimeout`, or `QueryError` (`.message`, SQLite's text); map each to its own SSE error event. The guard executes the original SQL minus trailing `;`/comments, so show `GuardResult.sql`-equivalent (i.e. what ran), not a regenerated form. Column-level `excluded:` is NOT enforced by the guard (only tables); the prompt must not mention excluded columns, and `SELECT *` would read them: decide here whether to forbid `SELECT *` on tables with excluded columns.
 - **Note (from slice 1):** `askdb.main.build_state(settings)` returns `AppState` (stored on `app.state.askdb`) with `schema_info` (the merged schema+glossary dict, excluded entries already removed) and `issues`. Build prompts from `schema_info`; do not re-read the glossary. The glossary `description` is free text to send verbatim. A missing API key is an issue but does not block `schema-info`; `/api/ask` must check `settings.has_api_key` itself.
 
 ## Slice 4: Summary, number verification, audit log
@@ -62,12 +63,14 @@ Conventions for every slice: tests land with the code; the guard gets adversaria
 - **Files:** `agent.py` (`clarify` → 2–4 option buttons and a rerun with the answer appended; `unanswerable` with closest fields; read-only refusal for write intent; self-check LLM call that may lower confidence, warn, or request a repair; repair loop max 2 retries with a retries list; zero-row near-match suggestions via LIKE, case-insensitive, and edit distance; tie notes), `askdb/selfcheck.py`, `askdb/nearmatch.py`, `askdb/evals.py` (loads `data/cloudmetrics_eval.yaml` only when run explicitly, order-insensitive set comparison unless ranking, reports pass rate and wrong-but-high-confidence count), `tests/validation/` runner, frontend clarify buttons, "No matching rows" with suggestions, retries listed in the derivation panel, `tests/test_agent_paths.py`, `tests/test_evals.py`.
 - **Verify:** Stubbed-LLM tests for each path: clarify rerun, unanswerable, "delete all orders" refusal, a self-check-triggered repair, an SQL-error repair that stops after 2 retries with "couldn't answer reliably", and "Acme" → "ACME Inc." suggestion. The harness compares result sets correctly on fabricated cases. `pytest tests/validation` runs a first live baseline (record the number in this file, no gate yet).
 - **Depends on:** Slices 4 and 5.
+- **Note (from slice 2):** `QueryError.message` is the SQLite error to feed the repair loop. The cartesian-join `GuardError.reason` is also written for the model/user to act on.
 
 ## Slice 7: Export, table polish, cancel
 - **Goal:** Results are usable at 10k rows. Users can export in all four ways and cancel a running question.
 - **Files:** `askdb/export.py` (CSV re-run capped with truncation noted; xlsx via openpyxl with sheet 1 data and sheet 2 question, SQL, summary, assumptions), `POST /api/export`, frontend `ResultTable` (sortable columns, sticky header, virtualized, visible NULLs, number formatting by type, truncation banner, BLOB and long-text display), copy buttons (summary and method as Markdown, table as TSV), cancel button wired to SSE abort and backend query interrupt on disconnect, queued-with-message for concurrency overflow, plain-language errors with a "rephrase" hint, `tests/test_export.py`, `tests/test_cancel.py`, frontend table and export tests.
 - **Verify:** The xlsx test reopens the file and checks both sheets. The CSV truncation note appears for an over-cap query. A cancel test shows the backend query is interrupted after the client disconnects. Component test: 10k rows render without mounting all rows. Manual UI check: sort, copy, export, cancel, truncation banner. WCAG AA contrast is spot-checked.
 - **Depends on:** Slices 3 and 5 (UI and card). It is independent of slice 6 except for shared answer types.
+- **Note (from slice 2):** cancel hooks into the progress handler `over_deadline` in `Executor.run` (add a `threading.Event` checked there; returning 1 aborts). `_slots` blocks silently when full: the queued-with-message behaviour needs a non-blocking check or a callback. Export should call `run(sql, truncate_cells=False)` so long text is not cut at 1,000 chars.
 
 ## Slice 8: Admin page, release gate, docs
 - **Goal:** Localhost-only `/admin` can change DB and glossary paths with validate-then-activate and hot reload. The golden set passes the release gate. A new user can follow the run instructions.

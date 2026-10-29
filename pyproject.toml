@@ -9,6 +9,7 @@ description = "Ask plain-English questions of one read-only SQLite database."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
+    "sqlglot>=25",
     "uvicorn>=0.29",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",

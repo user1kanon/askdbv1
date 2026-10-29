@@ -1,0 +1,17 @@
+Slice 2: Guard and read-only executor
+
+Added
+- askdb/sql_guard.py: check_sql parses with sqlglot (SQLite dialect) and rejects anything but exactly one top-level SELECT / WITH-SELECT / set operation. Rejects DDL/DML/PRAGMA/ATTACH/EXPLAIN/transaction nodes anywhere in the tree, any function not in ALLOWED_FUNCTIONS (load_extension, readfile, writefile, randomblob, zeroblob, pragma_* ... are absent), sqlite_* tables, and (optionally) tables outside allowed_tables. Unparseable input, unterminated comments/strings, empty and oversize (20k chars) SQL are rejected. The text to execute is the original SQL cut after its last non-semicolon token (drops trailing ; and comments). check_plan runs EXPLAIN QUERY PLAN and rejects sibling full scans of base tables when the query has a join with no column-referencing ON/USING (sqlglot turns a bare JOIN into ON TRUE, handled).
+- askdb/executor.py: Executor(db_path, row_cap, timeout_s, max_concurrent, allowed_tables); run() = guard -> semaphore -> fresh read-only connection (mode=ro + query_only) -> authorizer (allows SELECT/RECURSIVE/READ of non-sqlite_ tables/allowlisted functions, denies all else) -> progress-handler deadline -> plan check -> "SELECT * FROM (<sql>) LIMIT cap+1". Returns QueryResult(columns, rows, truncated, duration_s). Raises GuardError, QueryTimeout, QueryError. BLOBs shown as "<blob N bytes>", text cells cut at 1,000 chars (truncate_cells=False to disable).
+- settings: max_concurrent_queries (default 2).
+- pyproject: sqlglot dependency.
+- tests: test_sql_guard.py (41 rejected, 20 accepted, comment/string tricks, allowed_tables, join flag), test_executor.py (row cap, order, timeout, queue/concurrency, BLOB/long text, SQL errors, cartesian vs legitimate joins, defense-in-depth: ro URI only / query_only only / authorizer only / full stack each block writes, ATTACH, PRAGMA, TEMP tables, load_extension, sqlite_master).
+
+Decisions / gotchas
+- Timeout aborts via the progress handler returning non-zero (equivalent to interrupt()); needed so slice 7 can add a cancel Event in the same place.
+- mode=ro does not stop CREATE TEMP TABLE (separate scratch db); the authorizer does. Tested.
+- Column-level excluded: is not enforced by the guard (tables only). Noted under slice 3.
+
+Verification
+- python -m pytest: 163 passed (slice 2 added 120).
+- ruff check / ruff format --check: clean.

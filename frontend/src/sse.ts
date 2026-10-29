@@ -1,4 +1,4 @@
-export type Stage = 'understanding' | 'running'
+export type Stage = 'understanding' | 'running' | 'summarizing'
 
 export interface Interpretation {
   sql: string
@@ -15,10 +15,17 @@ export interface TableData {
   truncated: boolean
 }
 
+export interface SummaryData {
+  text: string
+  note: string | null
+  verified: boolean
+}
+
 export type AskEvent =
   | { name: 'stage'; data: { stage: Stage } }
   | { name: 'interpretation'; data: Interpretation }
   | { name: 'table'; data: TableData }
+  | { name: 'summary'; data: SummaryData }
   | { name: 'error'; data: { kind: string; message: string } }
   | { name: 'done'; data: Record<string, never> }
 

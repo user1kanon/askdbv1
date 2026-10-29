@@ -46,3 +46,9 @@ def tiny_db(tmp_path: Path) -> Path:
     conn.commit()
     conn.close()
     return path
+
+
+@pytest.fixture(autouse=True)
+def isolated_audit_log(tmp_path, monkeypatch):
+    """Tests never write to the real logs/ directory."""
+    monkeypatch.setenv("AUDIT_LOG_PATH", str(tmp_path / "audit" / "audit.jsonl"))

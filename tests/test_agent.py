@@ -29,6 +29,10 @@ def state(sample_db, sample_glossary):
     return build_state(Settings(_env_file=None, db_path=sample_db, glossary_path=sample_glossary))
 
 
+def summ(text="Four plans."):
+    return {"summary": text}
+
+
 def run(state, *responses, question="how many plans?"):
     stub = StubLLM(list(responses))
     agent = Agent(stub, state.executor, state.schema_info)
@@ -40,11 +44,24 @@ def names(events):
 
 
 def test_happy_path_streams_stages_then_table(state):
-    events, stub = run(state, ok("SELECT plan_name, monthly_price FROM plans ORDER BY 2"))
-    assert names(events) == ["stage", "interpretation", "stage", "table", "done"]
+    events, stub = run(
+        state,
+        ok("SELECT plan_name, monthly_price FROM plans ORDER BY 2"),
+        summ("There are 4 plans."),
+    )
+    assert names(events) == [
+        "stage",
+        "interpretation",
+        "stage",
+        "table",
+        "stage",
+        "summary",
+        "done",
+    ]
     assert [e.data.get("stage") for e in events if e.name == "stage"] == [
         "understanding",
         "running",
+        "summarizing",
     ]
     table = events[3].data
     assert table["columns"] == ["plan_name", "monthly_price"]
@@ -54,9 +71,9 @@ def test_happy_path_streams_stages_then_table(state):
     assert events[1].data["confidence"] == "high"
 
 
-def test_one_llm_call_with_schema_and_question(state):
-    _, stub = run(state, ok("SELECT 1"), question="what is MRR?")
-    assert len(stub.calls) == 1
+def test_interpret_call_carries_schema_and_question(state):
+    _, stub = run(state, ok("SELECT 1"), summ("The result is 1."), question="what is MRR?")
+    assert len(stub.calls) == 2  # interpret, then summarize
     call = stub.calls[0]
     assert call.schema is RESPONSE_SCHEMA
     assert "<question>\nwhat is MRR?\n</question>" == call.user
@@ -135,9 +152,11 @@ def test_excluded_column_cannot_be_read_even_with_select_star(tmp_path):
         events, _ = run(state, ok(sql))
         assert events[-1].data["kind"] == "sql", sql
         assert "not available" in events[-1].data["message"]
-    events, _ = run(state, ok("SELECT name, COUNT(*) FROM pets GROUP BY name"))
+    events, _ = run(state, ok("SELECT name, COUNT(*) FROM pets GROUP BY name"), summ("Rex: 1."))
     assert events[3].data["rows"] == [["Rex", 1]]
-    assert "ssn" not in "".join(run(state, ok("SELECT 1"))[1].calls[0].system)
+    assert "ssn" not in "".join(
+        run(state, ok("SELECT 1"), summ("The result is 1."))[1].calls[0].system
+    )
 
 
 def test_injection_value_in_schema_does_not_change_behaviour(tmp_path):

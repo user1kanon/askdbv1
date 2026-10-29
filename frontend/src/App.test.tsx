@@ -101,3 +101,55 @@ it('does not submit an empty question', async () => {
   expect(screen.getByRole('button', { name: 'Ask' })).toBeDisabled()
   expect(fetchMock).not.toHaveBeenCalled()
 })
+
+it('shows the summary above the table', async () => {
+  await ask(
+    sse(
+      block('table', { columns: ['n'], rows: [[4]], row_count: 1, truncated: false }),
+      block('stage', { stage: 'summarizing' }),
+      block('summary', { text: 'There are 4 plans.', note: null, verified: true }),
+      block('done', {}),
+    ),
+  )
+  const summary = await screen.findByRole('region', { name: 'Summary' })
+  expect(summary).toHaveTextContent('There are 4 plans.')
+  expect(screen.queryByRole('note')).not.toBeInTheDocument()
+  const table = screen.getByRole('table')
+  expect(summary.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+})
+
+it('explains a fallback summary with its note', async () => {
+  await ask(
+    sse(
+      block('table', { columns: ['n'], rows: [[4]], row_count: 1, truncated: false }),
+      block('summary', {
+        text: 'The result is 4 (n).',
+        note: 'The generated summary quoted figures that could not be checked against the data.',
+        verified: false,
+      }),
+      block('done', {}),
+    ),
+  )
+  expect(await screen.findByRole('note')).toHaveTextContent(/could not be checked/)
+  expect(screen.getByText('The result is 4 (n).')).toBeInTheDocument()
+})
+
+it('shows the summarizing stage', async () => {
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const encoder = new TextEncoder()
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      controller.enqueue(encoder.encode(block('stage', { stage: 'summarizing' })))
+      await gate
+      controller.close()
+    },
+  })
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 200 })))
+  const user = userEvent.setup()
+  render(<App />)
+  await user.type(screen.getByLabelText(/ask a question/i), 'q')
+  await user.click(screen.getByRole('button', { name: 'Ask' }))
+  expect(await screen.findByText('Writing a summary…')).toBeInTheDocument()
+  release()
+})

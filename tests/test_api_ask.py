@@ -53,15 +53,33 @@ def ask(client, question="how many plans?"):
 
 def test_streams_stages_then_table(api):
     client, stub = api
-    stub.responses.append(ok("SELECT plan_name FROM plans ORDER BY monthly_price"))
+    stub.responses.extend(
+        [
+            ok("SELECT plan_name FROM plans ORDER BY monthly_price"),
+            {"summary": "There are 4 plans, from Starter to Enterprise."},
+        ]
+    )
     response, events = ask(client)
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert [name for name, _ in events] == ["stage", "interpretation", "stage", "table", "done"]
+    assert [name for name, _ in events] == [
+        "stage",
+        "interpretation",
+        "stage",
+        "table",
+        "stage",
+        "summary",
+        "done",
+    ]
     assert events[0][1] == {"stage": "understanding"}
     assert events[2][1] == {"stage": "running"}
     table = events[3][1]
     assert table["columns"] == ["plan_name"]
     assert table["rows"] == [["Starter"], ["Professional"], ["Business"], ["Enterprise"]]
+    assert events[4][1] == {"stage": "summarizing"}
+    assert events[5] == (
+        "summary",
+        {"text": "There are 4 plans, from Starter to Enterprise.", "note": None, "verified": True},
+    )
 
 
 def test_non_select_sql_yields_guard_error_event(api):
@@ -82,7 +100,7 @@ def test_llm_error_event(api):
 def test_per_question_call_cap_applies(api):
     client, stub = api
     main.app.state.askdb.settings.llm_max_calls_per_question = 1
-    stub.responses.extend([ok("SELECT 1"), ok("SELECT 2")])
+    stub.responses.extend([ok("SELECT 1"), {"summary": "x"}, ok("SELECT 2")])
     ask(client)
     assert len(stub.calls) == 1
 

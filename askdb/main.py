@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from askdb.agent import Agent, Event
+from askdb.audit import AuditLog
 from askdb.executor import Executor
 from askdb.glossary import (
     GlossaryError,
@@ -35,6 +36,7 @@ class AppState:
     schema_info: dict[str, Any] | None = None
     executor: Executor | None = None
     llm: LLMClient | None = None
+    audit: AuditLog | None = None
 
 
 def build_state(settings: Settings) -> AppState:
@@ -43,6 +45,7 @@ def build_state(settings: Settings) -> AppState:
     A missing API key does not stop schema loading, but is still reported.
     """
     state = AppState(settings)
+    state.audit = AuditLog(settings.audit_log_path, settings.audit_max_bytes)
     if not settings.has_api_key:
         state.issues.append(
             "ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add your key."
@@ -137,7 +140,7 @@ def ask(request: AskRequest) -> StreamingResponse:
             detail={"issues": [i for i in state.issues if "ANTHROPIC_API_KEY" in i]},
         )
     llm = BudgetedLLM(state.llm, state.settings.llm_max_calls_per_question)
-    agent = Agent(llm, state.executor, state.schema_info)
+    agent = Agent(llm, state.executor, state.schema_info, state.audit)
 
     def stream() -> Iterator[str]:
         for event in agent.ask(request.question):

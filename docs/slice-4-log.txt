@@ -1,0 +1,23 @@
+Slice 4: Summary, number verification, audit log
+
+Backend
+- askdb/verify.py: extract_figures reads numbers as written (1,234 / 12.5% / $1.2M / 1.2 million / negatives), with the precision they were written at; dates (2025-11), Q2/H1, ordinals, 12kg, list markers and identifiers are not figures. GroundTruth.from_result builds the per-column stats shown to the model (row count, nulls, sum/mean/min/max, distinct) and the set of numbers a summary may quote: cells, stats, row/column counts, numbers in the question and inside text cells. Shares of a column total are a separate set that only a percent figure (or a fraction <= 1) can match, so "top 7" cannot be justified by a 6.8% share. verify_summary returns the unsupported figures; rounding only to the written decimal places is accepted ("about 3,500" for 3,480.5 is not).
+- askdb/summarizer.py: Summarizer asks for {summary}, with question, SQL, column stats and the first 50 rows wrapped as escaped untrusted data (no tools). Every figure is verified against the FULL result; a failure triggers one regeneration naming the unsupported figures; a second failure returns a templated summary plus a note. An LLM error also degrades to the templated summary with a note. Zero rows skip the model call.
+- askdb/audit.py: AuditLog appends JSON lines (timestamp, question, sql, status, row_count, duration_s, retries, llm_calls, input_tokens, output_tokens), rotates by size with limited backups, never raises (logs a warning without the question). AuditRecord has no field for rows or summaries.
+- askdb/agent.py: new stage "summarizing" and "summary" event {text, note, verified} after the table; a _Trace records the outcome and the audit line is written in a finally, so an abandoned stream is logged as "cancelled". Token and call tallies are read only from a BudgetedLLM (by type).
+- askdb/main.py, settings: AuditLog in AppState; AUDIT_LOG_PATH (default logs/audit.jsonl, git-ignored) and AUDIT_MAX_BYTES (5 MB).
+
+Frontend
+- Summary section above the table, a role="note" banner for fallback summaries, "Writing a summary..." stage.
+
+Bug caught by a test during the slice
+- The first version of Agent._record read llm.calls by attribute name. With a StubLLM that attribute is a list of whole prompts (including row values), which was written into the audit log. Fixed by reading tallies only from a BudgetedLLM; regression assertion added in test_audit.py.
+
+Tests
+- Backend 286 (80 new): test_verify (46), test_summarizer, test_agent_summary (regeneration, fallback, zero rows, audit statuses, cancelled stream), test_audit (rotation, no row values end to end, write failure), updated test_agent / test_api_ask for the new events. conftest points AUDIT_LOG_PATH at a temp dir for every test.
+- Frontend 14 (3 new).
+
+Verification run
+- python -m pytest: 286 passed. ruff check / format --check on askdb and tests: clean.
+- frontend: npm run lint, typecheck, test (14 passed), build: clean.
+- NOT done: a live ask showing a model-written summary (no ANTHROPIC_API_KEY in this environment).

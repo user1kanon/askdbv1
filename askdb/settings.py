@@ -23,8 +23,10 @@ class Settings(BaseSettings):
     max_concurrent_queries: int = Field(2, gt=0)
     llm_model: str = "claude-opus-5-5"
     llm_max_calls_per_question: int = Field(6, gt=0)
+    audit_log_path: Path = Path("logs/audit.jsonl")
+    audit_max_bytes: int = Field(5_000_000, gt=0)
 
-    @field_validator("db_path", "glossary_path")
+    @field_validator("db_path", "glossary_path", "audit_log_path")
     @classmethod
     def _anchor_to_project_root(cls, value: Path) -> Path:
         """Relative paths resolve against the project root, not the launch directory."""

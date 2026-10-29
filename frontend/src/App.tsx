@@ -2,11 +2,12 @@ import { useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { ResultTable } from './ResultTable'
 import { streamAsk } from './sse'
-import type { Stage, TableData } from './sse'
+import type { Stage, SummaryData, TableData } from './sse'
 
 const STAGE_LABEL: Record<Stage, string> = {
   understanding: 'Understanding your question…',
   running: 'Running the query…',
+  summarizing: 'Writing a summary…',
 }
 
 export function App() {
@@ -14,6 +15,7 @@ export function App() {
   const [asked, setAsked] = useState('')
   const [stage, setStage] = useState<Stage | null>(null)
   const [table, setTable] = useState<TableData | null>(null)
+  const [summary, setSummary] = useState<SummaryData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const busy = useRef(false)
 
@@ -24,12 +26,14 @@ export function App() {
     busy.current = true
     setAsked(q)
     setTable(null)
+    setSummary(null)
     setError(null)
     setStage('understanding')
     try {
       for await (const event of streamAsk(q)) {
         if (event.name === 'stage') setStage(event.data.stage)
         else if (event.name === 'table') setTable(event.data)
+        else if (event.name === 'summary') setSummary(event.data)
         else if (event.name === 'error') setError(event.data.message)
       }
     } finally {
@@ -64,6 +68,16 @@ export function App() {
         <p role="alert" className="error">
           {error}
         </p>
+      )}
+      {summary && (
+        <section aria-label="Summary" className="summary">
+          <p>{summary.text}</p>
+          {summary.note && (
+            <p role="note" className="banner">
+              {summary.note}
+            </p>
+          )}
+        </section>
       )}
       {table && <ResultTable table={table} />}
     </main>

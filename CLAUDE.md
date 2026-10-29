@@ -19,17 +19,18 @@ FastAPI (Python) backend, React frontend, SQLite (read-only), Claude API, `sqlgl
 
 ## Commands
 
-No code exists yet. These are the intended commands; correct them here once scaffolding is in place.
+Backend and frontend scaffolding exist (slices 1-3). Run the backend first: the Vite dev server proxies
+`/api` to `127.0.0.1:8000`. Live questions need `ANTHROPIC_API_KEY` in `.env`; tests run without it.
 
 ```
-pip install -e ".[dev]"                 # backend deps (Python)
-cd frontend && npm install              # frontend deps
-uvicorn askdb.main:app --reload         # run backend (binds 127.0.0.1)
-cd frontend && npm run dev              # run frontend
-pytest                                  # all backend tests
-pytest tests/test_sql_guard.py -k name  # a single test
-ruff check . && ruff format --check .   # lint backend
-cd frontend && npm run lint && npm test # lint and test frontend
+pip install -e ".[dev]"                          # backend deps (Python)
+cd frontend && npm install                       # frontend deps
+uvicorn askdb.main:app --reload                  # run backend (binds 127.0.0.1:8000)
+cd frontend && npm run dev                       # run frontend (http://127.0.0.1:5173)
+pytest                                           # all backend tests
+pytest tests/test_sql_guard.py -k name           # a single test
+ruff check askdb tests && ruff format --check askdb tests   # lint backend (not `.`: it scans .claude/worktrees)
+cd frontend && npm run lint && npm run typecheck && npm test   # lint, typecheck, test frontend
 ```
 
 ## Layout

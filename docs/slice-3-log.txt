@@ -1,0 +1,23 @@
+Slice 3: Walking skeleton: ask -> table, streamed
+
+Backend
+- askdb/llm.py: LLMClient protocol (complete_json); AnthropicLLM (structured JSON output via output_config.format, effort medium, cache_control on the last system block, server-side fallbacks "default" with beta server-side-fallback-2026-07-01, SDK retries off and one own retry with backoff on rate limit / overload / connection errors, refusal and max_tokens become LLMError, no partial answers); BudgetedLLM (per-question call cap, token tallies); StubLLM for tests.
+- askdb/prompting.py: RULES (SQLite dialect, read-only, NULLIF division, integer division, NULL handling, tie-breakers, treat schema as data), RESPONSE_SCHEMA (status ok|clarify|unanswerable, sql, assumptions, filters, method_steps, confidence, message), render_schema (schema + glossary inside <database_schema>), escape_data (neutralises tag-like text so DB values / glossary text cannot close the delimiter), build_user.
+- askdb/agent.py: Agent.ask yields Events: stage(understanding) -> interpretation -> stage(running) -> table -> done; errors as error events with kind llm | unanswerable | unsupported | guard | timeout | sql. Only status=ok is handled.
+- askdb/main.py: POST /api/ask (SSE via StreamingResponse, 2000-char question limit, 503 with actionable issues when DB/glossary/key unusable); build_state now also builds the Executor (allowed_tables = visible tables, denied_columns = glossary excluded columns) and AnthropicLLM when a key is set.
+- askdb/executor.py: authorizer factory with denied_columns, so excluded columns cannot be read even via SELECT * (resolves the slice 2 note); denied reads / "prohibited" errors map to a plain "not available" QueryError.
+- settings: llm_model (default claude-opus-5-5), llm_max_calls_per_question (6). pyproject: anthropic dependency.
+
+Frontend (frontend/, Vite + React + TypeScript)
+- sse.ts (incremental SSE parser + streamAsk over fetch POST, HTTP/network failures become error events), App.tsx (input, stage indicator, error alert, result), ResultTable.tsx (visible NULLs, truncation banner), styles with light/dark tokens, vitest + testing-library, eslint, tsc. Vite dev server binds 127.0.0.1 and proxies /api to 127.0.0.1:8000.
+- CLAUDE.md Commands section corrected.
+
+Tests
+- Backend (206 total, 43 new this slice): test_llm (request shape, retry once, refusal, bad JSON, budget cap), test_prompting (rendering, escaping, injection payloads in DB values and glossary), test_agent (stage order, guard/sql/timeout/truncation/unanswerable/llm errors, excluded-column enforcement, injection value + DROP stays blocked), test_api_ask (SSE over TestClient with stubbed LLM, 422, 503s).
+- Frontend (11): sse.test.ts, App.test.tsx.
+
+Verification run
+- python -m pytest: 206 passed. ruff check/format --check on askdb and tests: clean.
+- frontend: npm run lint, npm run typecheck, npm test (11 passed), npm run build: all clean.
+- Smoke: uvicorn + Vite running together; /api/health and POST /api/ask via the Vite proxy return the missing-key message.
+- NOT done: a live question against Claude. No ANTHROPIC_API_KEY is configured in this environment, so AnthropicLLM is only exercised against a fake client (request shape unverified against the real API, including the fallbacks parameter).

@@ -8,7 +8,7 @@
 |---|---|---|---|
 | 1 | Foundation: settings, schema introspection, glossary | done | 43 tests; SPEC §7 updated to the list-of-tables glossary shape |
 | 2 | Guard and read-only executor | done | 163 tests total; guard + executor + 4-layer defense-in-depth tests |
-| 3 | Walking skeleton: ask → table, streamed | todo | |
+| 3 | Walking skeleton: ask → table, streamed | done | 206 backend + 11 frontend tests; manual live ask NOT run (no ANTHROPIC_API_KEY in the build env), do it first when a key is available |
 | 4 | Summary, number verification, audit log | todo | |
 | 5 | Derivation panel, relative time, follow-ups, confidence | todo | |
 | 6 | Clarify, unanswerable, refusal, self-check, repair, zero-row, golden harness | todo | |
@@ -50,6 +50,7 @@ Conventions for every slice: tests land with the code; the guard gets adversaria
 - **Files:** `askdb/summarizer.py` (rows wrapped as untrusted data, column stats, first ~50 rows, no tools), `askdb/verify.py` (number extraction and matching: rounding, percentages, thousands separators), `askdb/audit.py` (JSONL with size rotation; question, SQL, status, row count, duration, retries, tokens; never rows), `agent.py` and `main.py` summary event, frontend summary above table, `tests/test_summarizer.py`, `tests/test_verify.py`, `tests/test_audit.py`.
 - **Verify:** Unit tests: a hallucinated figure is rejected and regenerated once; a second failure gives the templated summary; formatted numbers (`1,234`, `12.5%`) verify correctly. The audit test confirms no row values appear in the log. API test sees the summary event after the table. Manual live ask shows the summary.
 - **Depends on:** Slice 3.
+- **Note (from slice 3):** `LLMClient` has only `complete_json(system, user, schema)`; the summary call can use a one-field schema. `main.ask` builds a `BudgetedLLM` per request, which already tracks `calls`, `input_tokens` and `output_tokens` for the audit record, but `Agent` does not expose it yet: pass it in or return it. `Agent.ask` is a sync generator of `Event(name, data)`; emit the summary event after `table`, before `done`. Frontend `App.tsx` ignores `interpretation`; the summary goes above `ResultTable`.
 
 ## Slice 5: Derivation panel, relative time, follow-ups, confidence
 - **Goal:** Each answer card shows summary → table → "How this was derived" (assumption and filter chips, method steps, row counts, collapsible copyable SQL). Relative dates resolve against the as-of anchor. Follow-ups carry the last ≤6 turns. Low and medium confidence show the amber notice.
@@ -57,6 +58,7 @@ Conventions for every slice: tests land with the code; the guard gets adversaria
 - **Verify:** Unit tests for "last quarter", "this month", and "recent" with fiscal start month 4 and both anchor modes. A follow-up request carries history without rows (assert on the stubbed prompt). Frontend component tests for chips, the amber notice (medium and low), and persistence across reload but not across a new tab. Manual: ask, then "break that down by region".
 - **Depends on:** Slice 4.
 - **Note (from slice 1):** the bundled `data/cloudmetrics.yaml` has no `as_of`, so `timeutil` needs a default anchor (e.g. `invoices.invoice_date` data max) or the YAML needs an `as_of` entry (data ends Nov 2025). `schema_info` exposes `as_of` and `fiscal_year_start_month`.
+- **Note (from slice 3):** `RESPONSE_SCHEMA` in `prompting.py` lacks `builds_on_turn` and `is_new_topic`. Put turn history in `build_user`, not the system blocks, so the cached schema block stays byte-identical. The frontend keeps all state in `App.tsx` `useState`; split into `AnswerCard` and persist to `sessionStorage` here. The `interpretation` event already carries sql, assumptions, filters, method_steps and confidence.
 
 ## Slice 6: Clarify, unanswerable, refusal, self-check, repair, zero-row, golden harness
 - **Goal:** The pipeline handles every non-happy path in SPEC §5 and §13. The golden-set harness can measure accuracy.
@@ -64,6 +66,7 @@ Conventions for every slice: tests land with the code; the guard gets adversaria
 - **Verify:** Stubbed-LLM tests for each path: clarify rerun, unanswerable, "delete all orders" refusal, a self-check-triggered repair, an SQL-error repair that stops after 2 retries with "couldn't answer reliably", and "Acme" → "ACME Inc." suggestion. The harness compares result sets correctly on fabricated cases. `pytest tests/validation` runs a first live baseline (record the number in this file, no gate yet).
 - **Depends on:** Slices 4 and 5.
 - **Note (from slice 2):** `QueryError.message` is the SQLite error to feed the repair loop. The cartesian-join `GuardError.reason` is also written for the model/user to act on.
+- **Note (from slice 3):** `Agent` currently ends with an error event of kind `unsupported` for `clarify` and `unanswerable` for `unanswerable` (message from the model); replace with the real paths. Excluded columns are enforced in the executor authorizer, so `SELECT *` on a table with an excluded column fails with `QueryError` "not available"; the repair prompt should say to list columns explicitly. `AnthropicLLM` sends `fallbacks: "default"` with beta `server-side-fallback-2026-07-01` via `client.beta.messages`; confirm that works live.
 
 ## Slice 7: Export, table polish, cancel
 - **Goal:** Results are usable at 10k rows. Users can export in all four ways and cancel a running question.
@@ -71,6 +74,7 @@ Conventions for every slice: tests land with the code; the guard gets adversaria
 - **Verify:** The xlsx test reopens the file and checks both sheets. The CSV truncation note appears for an over-cap query. A cancel test shows the backend query is interrupted after the client disconnects. Component test: 10k rows render without mounting all rows. Manual UI check: sort, copy, export, cancel, truncation banner. WCAG AA contrast is spot-checked.
 - **Depends on:** Slices 3 and 5 (UI and card). It is independent of slice 6 except for shared answer types.
 - **Note (from slice 2):** cancel hooks into the progress handler `over_deadline` in `Executor.run` (add a `threading.Event` checked there; returning 1 aborts). `_slots` blocks silently when full: the queued-with-message behaviour needs a non-blocking check or a callback. Export should call `run(sql, truncate_cells=False)` so long text is not cut at 1,000 chars.
+- **Note (from slice 3):** `/api/ask` streams a sync generator in Starlette's threadpool; a client disconnect only stops iteration between yields, so a running query is not interrupted until the progress-handler cancel flag (see slice 2 note) is wired to the disconnect. `streamAsk` in `frontend/src/sse.ts` already accepts an `AbortSignal`; `App.tsx` does not pass one yet.
 
 ## Slice 8: Admin page, release gate, docs
 - **Goal:** Localhost-only `/admin` can change DB and glossary paths with validate-then-activate and hot reload. The golden set passes the release gate. A new user can follow the run instructions.
@@ -78,6 +82,7 @@ Conventions for every slice: tests land with the code; the guard gets adversaria
 - **Verify:** Non-loopback client address gets 403. A bad YAML, a missing-table reference, and a non-SQLite file are each rejected with exact errors while the old config stays live. A good change hot-reloads with no restart and `config.json` is gitignored. Release gate (SPEC §14): `pytest tests/validation` with live LLM, ≥90% golden pass and zero wrong-but-high-confidence results. If it fails, iterate prompts and glossary here. Manual end-to-end walkthrough of ask, clarify, follow-up, export, truncation, and cancel.
 - **Depends on:** Slices 6 and 7.
 - **Note (from slice 1):** `main.build_state` is the validate-then-activate building block: it already returns issues without raising. Admin should call it on candidate `Settings` and swap `app.state.askdb` only when `issues` has no glossary/DB errors (the missing-key issue is non-blocking). `config.json` loading is not implemented yet; `Settings` reads `.env` only.
+- **Note (from slice 3):** `build_state` also constructs `Executor` and `AnthropicLLM`, so the admin hot-reload swap of `app.state.askdb` replaces them together. There is no static serving of `frontend/dist` yet; README must say to run Vite or add a `StaticFiles` mount.
 
 ---
 

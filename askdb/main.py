@@ -1,13 +1,19 @@
 """FastAPI app: startup health check and schema info."""
 
+import json
 import logging
 import sqlite3
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
+from askdb.agent import Agent, Event
+from askdb.executor import Executor
 from askdb.glossary import (
     GlossaryError,
     apply_excluded,
@@ -15,6 +21,7 @@ from askdb.glossary import (
     load_glossary,
     validate_glossary,
 )
+from askdb.llm import AnthropicLLM, BudgetedLLM, LLMClient
 from askdb.schema import introspect, merge_glossary
 from askdb.settings import Settings, get_settings
 
@@ -26,6 +33,8 @@ class AppState:
     settings: Settings
     issues: list[str] = field(default_factory=list)
     schema_info: dict[str, Any] | None = None
+    executor: Executor | None = None
+    llm: LLMClient | None = None
 
 
 def build_state(settings: Settings) -> AppState:
@@ -72,6 +81,13 @@ def build_state(settings: Settings) -> AppState:
         state.issues.append("Every table is listed under `excluded:` in the glossary.")
         return state
     state.schema_info = merge_glossary(visible, apply_excluded(glossary))
+    state.executor = Executor.from_settings(
+        settings,
+        allowed_tables=frozenset(t.name for t in visible.tables),
+        denied_columns=frozenset(e for e in glossary.excluded if "." in e),
+    )
+    if settings.has_api_key:
+        state.llm = AnthropicLLM(settings.anthropic_api_key.get_secret_value(), settings.llm_model)
     return state
 
 
@@ -99,3 +115,36 @@ def schema_info() -> dict[str, Any]:
     if state.schema_info is None:
         raise HTTPException(status_code=503, detail={"issues": state.issues})
     return state.schema_info
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+
+
+def _sse(event: Event) -> str:
+    payload = json.dumps(event.data, default=str)
+    return "event: " + event.name + "\ndata: " + payload + "\n\n"
+
+
+@app.post("/api/ask")
+def ask(request: AskRequest) -> StreamingResponse:
+    state: AppState = app.state.askdb
+    if state.schema_info is None or state.executor is None:
+        raise HTTPException(status_code=503, detail={"issues": state.issues})
+    if state.llm is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"issues": [i for i in state.issues if "ANTHROPIC_API_KEY" in i]},
+        )
+    llm = BudgetedLLM(state.llm, state.settings.llm_max_calls_per_question)
+    agent = Agent(llm, state.executor, state.schema_info)
+
+    def stream() -> Iterator[str]:
+        for event in agent.ask(request.question):
+            yield _sse(event)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

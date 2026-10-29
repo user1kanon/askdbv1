@@ -35,19 +35,32 @@ class QueryResult:
     duration_s: float
 
 
-def authorizer(action: int, arg1: str | None, arg2: str | None, *_: Any) -> int:
-    """Allow SELECT machinery, reads of non-internal tables, and allowlisted functions only."""
-    if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_RECURSIVE):
-        return sqlite3.SQLITE_OK
-    if action == sqlite3.SQLITE_READ:
-        if arg1 and arg1.lower().startswith("sqlite_"):
-            return sqlite3.SQLITE_DENY
-        return sqlite3.SQLITE_OK
-    if action == sqlite3.SQLITE_FUNCTION:
-        return (
-            sqlite3.SQLITE_OK if (arg2 or "").lower() in ALLOWED_FUNCTIONS else sqlite3.SQLITE_DENY
-        )
-    return sqlite3.SQLITE_DENY
+def make_authorizer(denied_columns: frozenset[str] = frozenset()):
+    """Build the authorizer callback: SELECT machinery, reads of non-internal tables, and
+    allowlisted functions only. `denied_columns` holds "table.column" entries (the glossary's
+    `excluded:` columns); reading one fails even through `SELECT *`, which SQLite expands into
+    per-column reads before asking.
+    """
+    denied = frozenset(d.lower() for d in denied_columns)
+
+    def authorizer(action: int, arg1: str | None, arg2: str | None, *_: Any) -> int:
+        if action in (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_RECURSIVE):
+            return sqlite3.SQLITE_OK
+        if action == sqlite3.SQLITE_READ:
+            if arg1 and arg1.lower().startswith("sqlite_"):
+                return sqlite3.SQLITE_DENY
+            if arg1 and arg2 and f"{arg1}.{arg2}".lower() in denied:
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+        if action == sqlite3.SQLITE_FUNCTION:
+            allowed = (arg2 or "").lower() in ALLOWED_FUNCTIONS
+            return sqlite3.SQLITE_OK if allowed else sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_DENY
+
+    return authorizer
+
+
+authorizer = make_authorizer()
 
 
 def display_value(value: Any, truncate: bool = True) -> Any:
@@ -68,8 +81,10 @@ class Executor:
         timeout_s: float,
         max_concurrent: int = 2,
         allowed_tables: frozenset[str] | None = None,
+        denied_columns: frozenset[str] = frozenset(),
     ):
         self.db_path = db_path
+        self._authorizer = make_authorizer(denied_columns)
         self.row_cap = row_cap
         self.timeout_s = timeout_s
         self.allowed_tables = allowed_tables
@@ -77,7 +92,10 @@ class Executor:
 
     @classmethod
     def from_settings(
-        cls, settings: Settings, allowed_tables: frozenset[str] | None = None
+        cls,
+        settings: Settings,
+        allowed_tables: frozenset[str] | None = None,
+        denied_columns: frozenset[str] = frozenset(),
     ) -> "Executor":
         return cls(
             settings.db_path,
@@ -85,6 +103,7 @@ class Executor:
             settings.query_timeout_s,
             settings.max_concurrent_queries,
             allowed_tables,
+            denied_columns,
         )
 
     def run(self, sql: str, truncate_cells: bool = True) -> QueryResult:
@@ -93,7 +112,7 @@ class Executor:
         with self._slots:  # time spent queued does not count against the timeout
             conn = connect_readonly(self.db_path)  # a fresh connection per request
             try:
-                conn.set_authorizer(authorizer)
+                conn.set_authorizer(self._authorizer)
                 deadline = time.monotonic() + self.timeout_s
                 timed_out = False
 
@@ -116,6 +135,10 @@ class Executor:
                     if timed_out:
                         raise QueryTimeout(
                             f"The query took longer than {self.timeout_s:g} seconds."
+                        ) from exc
+                    if "not authorized" in str(exc) or "prohibited" in str(exc):
+                        raise QueryError(
+                            "The query used a table, column or function that is not available."
                         ) from exc
                     raise QueryError(str(exc)) from exc
                 truncated = len(fetched) > self.row_cap

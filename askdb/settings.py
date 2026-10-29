@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     row_cap: int = Field(10_000, gt=0)
     query_timeout_s: float = Field(10.0, gt=0)
     max_concurrent_queries: int = Field(2, gt=0)
+    llm_model: str = "claude-opus-5-5"
+    llm_max_calls_per_question: int = Field(6, gt=0)
 
     @field_validator("db_path", "glossary_path")
     @classmethod

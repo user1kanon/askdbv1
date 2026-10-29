@@ -1,0 +1,17 @@
+Slice 1: Foundation: settings, schema introspection, glossary
+
+Added
+- pyproject.toml: package metadata, deps (fastapi, uvicorn, pydantic-settings, pyyaml), dev extras, ruff and pytest config.
+- askdb/settings.py: pydantic-settings Settings (ANTHROPIC_API_KEY, DB_PATH, GLOSSARY_PATH, ROW_CAP, QUERY_TIMEOUT_S); relative paths resolve against the project root; only module that reads .env.
+- askdb/schema.py: read-only introspection (tables, columns, PKs, FKs, indexes, row counts, distincts for text columns with <=50 values); excluded entries are skipped before any value is read; merge_glossary builds the /api/schema-info payload.
+- askdb/glossary.py: YAML load (GlossaryError with readable messages), validate_glossary (tables, columns, references, joins, as_of, excluded, and EXPLAIN-compiled metrics/terms/examples on a read-only connection), apply_excluded.
+- askdb/main.py: build_state health check (missing key, missing/unreadable/empty DB, glossary errors, everything excluded), GET /api/health, GET /api/schema-info (503 with issues when unusable). The app starts even when unhealthy so the admin page can fix config later.
+- tests: test_schema.py, test_glossary.py, test_main.py (43 tests).
+
+Spec change (same change, per CLAUDE.md)
+- SPEC §7 now documents the glossary shape actually used by data/cloudmetrics.yaml: tables as a list, calendar.fiscal_year_start_month, optional metric `table`, excluded semantics.
+
+Verification
+- python -m pytest: 43 passed.
+- ruff check / ruff format --check on askdb and tests: clean.
+- uvicorn askdb.main:app bound 127.0.0.1; /api/health and /api/schema-info returned the merged schema (health lists the unset API key).

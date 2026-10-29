@@ -56,17 +56,19 @@ All must hold; failure of any rejects the query.
 
 ## 7. Schema and glossary
 **Introspection**: tables, columns, types, PKs, FKs, indexes, row counts, and for low-cardinality text columns the distinct values (cap e.g. 50) to ground filters.
-**Glossary YAML** (admin-provided, validated on load):
+**Glossary YAML** (admin-provided, validated on load). `tables` is a list (the bundled `data/cloudmetrics.yaml` uses this shape, with a free-text `description` carrying business rules and `calendar.fiscal_year_start_month`); unknown top-level keys such as `name`, `display_name`, `path` are ignored. A top-level `fiscal_year_start_month` is also accepted. A metric may name the `table` its expression is evaluated against; without it, the SQL must compile against at least one table. Metrics, terms and examples are validated by `EXPLAIN` on a read-only connection.
 ```yaml
+description: |                                          # free text sent verbatim
+  Business rules, grain of each table, ...
 as_of: { column: orders.order_date, mode: data_max }   # or mode: today
-fiscal_year_start_month: 4
+calendar: { fiscal_year_start_month: 4 }
 tables:
-  cust_ord_hdr:
+  - name: cust_ord_hdr
     description: Customer order headers
     columns:
-      flg_3: { description: "1 = cancelled", synonyms: [cancelled] }
+      - { name: flg_3, description: "1 = cancelled", synonyms: [cancelled] }
 metrics:
-  revenue: { sql: "SUM(order_total) FILTER (WHERE status <> 'Cancelled')", description: "Net revenue" }
+  revenue: { sql: "SUM(order_total) FILTER (WHERE status <> 'Cancelled')", table: cust_ord_hdr, description: "Net revenue" }
 terms:
   open order: "status IN ('New','Processing')"
 joins:
@@ -74,8 +76,9 @@ joins:
 examples:
   - q: "How many open orders does customer X have?"
     sql: "SELECT COUNT(*) ..."
-excluded: []   # tables/columns hidden from the LLM entirely (optional)
+excluded: []   # "table" or "table.column" entries hidden from the LLM entirely (optional)
 ```
+Excluded entries are never read (no row counts, no distinct values), and any metric, term, example or join whose SQL mentions an excluded column name (or table name) as a whole word is dropped. Free-text `description` fields are not scanned.
 Schema fits entirely in the prompt (small DB); sent each request with prompt caching.
 
 ## 8. Relative time
